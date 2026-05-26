@@ -1,0 +1,83 @@
+name: Originium Build
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+        contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Get latest tag
+        id: get_tag
+        run: |
+          git fetch --tags
+          latest_tag=$(git tag --sort=-v:refname | head -n 1)
+          echo "latest_tag=$latest_tag" >> $GITHUB_OUTPUT
+          if [[ -z "$latest_tag" ]]; then
+            echo "current_version=1.0.0" >> $GITHUB_OUTPUT
+          else
+            echo "current_version=${latest_tag#v}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Determine increment type
+        id: version_type
+        run: |
+          last_tag="${{ steps.get_tag.outputs.latest_tag }}"
+          if [[ -z "$last_tag" ]]; then
+            commits=$(git log --oneline)
+          else
+            commits=$(git log $last_tag..HEAD --oneline)
+          fi
+          
+          if echo "$commits" | grep -qiE "breaking change|!:"; then
+            echo "increment=major" >> $GITHUB_OUTPUT
+          elif echo "$commits" | grep -qiE "feat\(|feature:"; then
+            echo "increment=minor" >> $GITHUB_OUTPUT
+          else
+            echo "increment=patch" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Bump version
+        id: bump_version
+        uses: reecetech/version-increment@2024.4.3
+        with:
+          scheme: semver
+          increment: ${{ steps.version_type.outputs.increment }}
+
+      - name: Create and push tag
+        run: |
+          new_tag="v${{ steps.bump_version.outputs.version }}"
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git tag "$new_tag"
+          git push origin "$new_tag"
+          echo "new_tag=$new_tag" >> $GITHUB_OUTPUT
+          
+      - name: Build with Gradle
+        run: chmod +x gradlew && ./gradlew build
+        
+      - name: Create GitHub Release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ steps.bump_version.outputs.new_tag }}
+          name: "Release ${{ steps.bump_version.outputs.v-version }}"
+          artifacts: "build/libs/*.jar"
+          token: ${{ secrets.GITHUB_TOKEN }}
